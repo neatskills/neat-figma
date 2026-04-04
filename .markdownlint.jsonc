@@ -1,0 +1,16 @@
+{
+  // Skill documentation markdown configuration
+  "default": true,
+
+  // Line length - disabled for code-heavy documentation
+  "MD013": false,
+
+  // Allow emphasis as headings (for **Step X:** patterns)
+  "MD036": false,
+
+  // Fenced code language - many blocks are examples/output without specific language
+  "MD040": false,
+
+  // Table column style - consistent but doesn't match compact style
+  "MD060": false
+}
