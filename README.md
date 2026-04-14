@@ -18,6 +18,20 @@ Each skill is **fully self-contained** - just provide a Figma URL and it handles
 - Generates code matching your project
 - No config files needed
 
+## Installation
+
+Install the skills to your Claude Code environment:
+
+```bash
+./scripts/manage-skills.sh install
+```
+
+To uninstall:
+
+```bash
+./scripts/manage-skills.sh uninstall
+```
+
 ## Quick Start
 
 Set your Figma access token: `export FIGMA_ACCESS_TOKEN=figd_...` ([Get token](https://www.figma.com/settings))
