@@ -68,13 +68,33 @@ For each URL, fetch node data from Figma.
 
 Extract tokens:
 
-- **Colors**: SOLID fills and strokes (visible)
-- **Typography**: TEXT nodes (fontSize, fontWeight, lineHeight, fontFamily, letterSpacing)
-- **Spacing**: auto-layout padding and itemSpacing
-- **Sizing**: dimensions divisible by 4
-- **Shadows**: DROP_SHADOW and INNER_SHADOW
+- **Colors**: SOLID fills and strokes (visible) - high confidence
+- **Typography**: TEXT nodes (fontSize, fontWeight, lineHeight, fontFamily, letterSpacing) - high confidence
+- **Spacing**: auto-layout padding and itemSpacing - **requires validation**
+- **Sizing**: dimensions divisible by 4 - **requires validation**
+- **Shadows**: DROP_SHADOW and INNER_SHADOW - high confidence
 
 Track usage and source nodes per token. If multiple URLs, merge and deduplicate.
+
+**CRITICAL: Screenshot Verification for Spacing/Sizing**
+
+When spacing or sizing tokens are detected:
+
+1. **Extract primitive values** from Figma (raw pixel values like [4, 8, 12, 16, 32, 48, 64, 80])
+2. **PAUSE and request screenshot**: "I found spacing/sizing values in your Figma file. To ensure accurate semantic token names, please screenshot your Figma **Variables panel** (Local Variables → Spacing/Sizing section) and provide it."
+3. **Wait for screenshot** - do NOT create arbitrary token names
+4. **Read screenshot** to extract correct semantic token definitions:
+   - Token name (e.g., `semantic/space/xl`, `spacing/xl`, `xl`)
+   - Mapped value (e.g., `{primitive/space/32}` or `32`)
+5. **Validate mapping**: Match screenshot definitions to extracted primitive values
+6. **Generate theme files** with validated token names and values
+
+**Why this matters:** Pattern-based extraction finds raw pixel values but cannot determine semantic token names. Figma's Variables panel shows the actual token structure (e.g., `xl = 32` not `xl = 12`). Screenshot verification prevents incorrect mappings.
+
+**If user cannot provide screenshot:**
+- Ask which token names to use for each value
+- Document that mappings are user-provided, not validated
+- Warn: "These token names are not validated against Figma Variables. Verify correctness."
 
 ### Step 4: Generate Theme Files
 
@@ -124,3 +144,6 @@ product/
 | Token name conflicts | Ask user for resolution |
 | Too many similar values | Filter by minimum usage threshold (e.g., used 10+ times) |
 | Spacing/sizing noise | Only extract values divisible by 4 (design system convention) |
+| Wrong spacing/sizing token names | **ALWAYS request screenshot of Figma Variables panel** - never guess semantic token names from raw pixel values |
+| User cannot provide screenshot | Ask user to manually specify token names for each value, document as user-provided |
+| Screenshot shows alias tokens | Extract both the semantic name and resolved primitive value (e.g., `xl → {primitive/space/32} → 32`) |
