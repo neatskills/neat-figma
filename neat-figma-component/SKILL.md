@@ -9,15 +9,9 @@ description: Use when user provides Figma URL to generate UI components from Fig
 
 ## Overview
 
-Extract Figma components and generate code with proper types, styling, and variants. Generates starter components—manual refinement expected for interactions and logic.
+Extract Figma components and generate code with proper types, styling, and variants. Manual refinement expected for interactions and logic.
 
 **Principle:** Parse → Detect → Extract → Generate → Test
-
-## When to Use
-
-- User provides Figma URL to components/design system
-- Generate/scaffold UI components from Figma
-- Create components matching Figma designs
 
 Run `/neat-figma-foundation` first to establish theme tokens. Components auto-import theme values.
 
@@ -36,106 +30,144 @@ Run `/neat-figma-foundation` first to establish theme tokens. Components auto-im
 
 ### Step 1: Parse Figma URL
 
-Warn: "This will overwrite existing assets. Figma is the source of truth. Commit changes first if needed. Continue? (yes/no)"
+Warn: "This will overwrite existing assets. Commit changes first if needed. Continue? (yes/no)"
 
-If no: stop and exit.
+If no: stop.
 
-Extract `fileKey` and optional `nodeId`. From `/neat-figma-page`: node-id always provided. Direct invocation: if nodeId missing, fetch library and prompt for selection.
+Extract `fileKey` and optional `nodeId`. From `/neat-figma-page`: node-id provided. Direct: if missing, fetch library and prompt.
 
-Verify FIGMA_ACCESS_TOKEN. If missing, halt: "Set your Figma token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
+Verify FIGMA_ACCESS_TOKEN. If missing: "Set token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
 
-#### Request Screenshot
+#### Generate Component Screenshot
 
-Figma API provides precise values. Screenshot validates interpretation.
+**Dual-source extraction:** API = precise values, screenshot = visual structure.
 
-Request: "Upload screenshot showing component(s). Validates layout, structure, patterns. May request close-ups for complex components. Screenshot REQUIRED."
+```bash
+# Export component screenshot
+SCREENSHOT_URL=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/images/${fileKey}?ids=${nodeId}&format=png&scale=2" \
+  | jq -r '.images["'${nodeId}'"]')
 
-**Note:** Even from `/neat-figma-page`, component screenshots ensure variant coverage and detail validation.
+# Download screenshot
+curl -s "$SCREENSHOT_URL" -o /tmp/figma-component-${nodeId}.png
+```
 
-Wait for screenshot.
+If fails: "Upload screenshot. REQUIRED - provides visual structure."
+
+**Reveals:** Element types, patterns, states, labels, layout.
 
 ### Step 2: Auto-Detect Product Setup
 
-See [references/product-detection.md](../references/product-detection.md). Find component directory (`src/components`, `lib/widgets`, `Views`) and screen directory (`src/screens`, `src/pages`, `lib/screens`).
+See [references/product-detection.md](../references/product-detection.md). Find `<component-dir>` and `<screen-dir>`.
 
-If screen directory missing: "Screen directory not found. Create {suggested-path}? (yes/custom/skip)"
+If missing: "Create {suggested-path}? (yes/custom/skip)"
 
 ### Step 3: Determine Extraction Location
 
-Search `<component-dir>/` and `<screen-dir>/*/`. Match name (case-insensitive), ignore suffixes: "Component", "Widget", "View", "Screen".
+Search `<component-dir>/` and `<screen-dir>/*/`. Match name (case-insensitive), ignore suffixes.
 
-**If exists in `<component-dir>/`:** Reuse (skip)
+**Exists in `<component-dir>/`:** Reuse (skip)
 
-**If exists in `<screen-dir>/PageA/` and extracting for PageB:**
+**Exists in `<screen-dir>/PageA/` extracting for PageB:**
 
-Prompt: "⚠️ {ComponentName} in PageA/ — PageB needs it (2+ pages). Move to {component-dir}/? (yes/no)"
+"⚠️ {ComponentName} in PageA/ — PageB needs it. Move to {component-dir}/? (yes/no)"
 
-- yes: Move, verify, update imports, roll back on failure
-- no: Duplicate in PageB/, warn maintenance
+- yes: Move, verify, update imports, roll back on fail
+- no: Duplicate, warn maintenance
 
-**If NOT exists:**
-
-Check Figma parent:
+**NOT exists, check Figma parent:**
 
 - EXACTLY "Components"/"Design System"/"Library"/"Foundation" → `<component-dir>/`
-- Ambiguous (e.g., "Components Screen") → Prompt user for shared vs page
-- Otherwise → `<screen-dir>/PageName/` or ask user
+- Ambiguous → Prompt
+- Otherwise → `<screen-dir>/PageName/` or ask
 
 ### Step 4: Fetch Figma Components
 
-Fetch from API. Identify parent page.
+Fetch from Figma REST API. Identify parent page.
 
 ### Step 5: Determine Complexity
 
-**Primitive** (Step 1 sufficient): Single element, no INSTANCE nodes, 1-2 layers
+**Primitive:** Single element, no INSTANCE, 1-2 layers
 
-**Complex** (needs close-up): INSTANCE nodes, multiple elements, complex layout
+**Complex:** INSTANCE nodes, multiple elements
 
-If complex and Step 1 insufficient: "Upload close-up of {ComponentName}. Validates layout, visible elements, spacing, states."
+If complex:
+
+```bash
+# Export close-up screenshot for complex component (3x scale for detail)
+CLOSEUP_URL=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/images/${fileKey}?ids=${componentNodeId}&format=png&scale=3" \
+  | jq -r '.images["'${componentNodeId}'"]')
+
+curl -s "$CLOSEUP_URL" -o /tmp/figma-component-closeup-${componentNodeId}.png
+```
+
+If fails, request upload.
 
 ### Step 6: Extract Component Structure
 
-Find COMPONENT/COMPONENT_SET nodes. Extract fills, strokes, effects, cornerRadius, layoutMode, variant properties.
+Find COMPONENT/COMPONENT_SET nodes. Extract fills, strokes, effects, cornerRadius, layoutMode, variants.
 
-If INSTANCE nodes: Check if nested components exist. If not: "Extract {NestedComponentName}? (yes/no/placeholder)" — extract depth-first, skip, or use placeholder.
+If INSTANCE: "Extract {NestedComponentName}? (yes/no/placeholder)"
 
 ### Step 7: Analyze Components
 
-**Type:** Single → simple export; Set → variants with union props
+**Type:** Single → simple; Set → variants
 
-**Extract from API:** Layout, spacing, colors (hex/RGB), typography, dimensions, effects, variants
+**API:** Colors, spacing, typography, dimensions
 
-**Validate with screenshot:** Shape (rectangular vs circular), element presence, proportions, pattern type
+**Screenshot:** Shapes, types, layout, text, states
 
-**DON'T:** Guess from screenshot, interpret without screenshot, add "improvements"
+**Combine:** API: `width: 120px, fill: #0066CC`. Screenshot: button, "Submit". Result: button with exact values, correct type.
 
-**DO:** API for precision, screenshot for validation
+**DON'T:** Guess from API alone, add invisible features
+
+**DO:** API for precision, screenshot for structure
 
 ### Step 8: Resolve Styling
 
-Check theme directories. Match to tokens or hardcode with comments. If no theme + multiple components: "Run `/neat-figma-foundation` first, or proceed with hardcoded?"
+Check `<theme-dir>/`.
+
+**Exists:** Match values to tokens (`#0066CC` → `colors.primary`), generate imports
+
+**Missing:**
+
+- Multiple: "Run `/neat-figma-foundation` first, or hardcode?"
+- Single: Hardcode with `// TODO`
 
 ### Step 9: Generate Component Code
 
-Generate in target location (Step 3): framework conventions, proper typing, Figma values validated by screenshot, accessibility, Figma URL + date in header.
-
-For sets: variant props with types, separate styles.
+Generate in target location: framework conventions, typing, validated by screenshot, accessibility, Figma URL + date. Sets: variant props.
 
 ### Step 10: Generate Test File
 
-Generate tests: renders, handlers, disabled, variants.
+Tests: renders, handlers, disabled, variants.
 
 ### Step 11: Generate Index File
 
-Generate index/export per framework.
+Index/export per framework.
 
 ### Step 12: Update Main Export
 
-If centralized exports exist, add component.
+Add to centralized exports if exist.
 
-### Step 13: Validate
+### Step 13: Validate Against Screenshot
 
-Checklist: Colors/spacing/typography/dimensions from API. Layout/shape/labels/proportions match screenshot. No framework overrides or extras.
+Compare code to screenshot.
+
+```bash
+# Display screenshot for verification
+open /tmp/figma-component-${nodeId}.png
+```
+
+**Verification checklist:**
+
+1. ✅ Element type correct (button vs link)
+2. ✅ Visual properties accurate (colors, spacing, typography)
+3. ✅ Layout matches (arrangement, alignment)
+4. ✅ Content accurate (labels, icons, states)
+5. ✅ No extra features (only visible)
+6. ✅ States/variants covered
 
 If fails: revise. If pass: "✅ {ComponentName} — Files: {list} — Location: {path} — ✓ Validated"
 
@@ -167,7 +199,7 @@ product/<screen-dir>/LoginPage/LoginForm/
 
 | Issue | Solution |
 |-------|----------|
-| No screenshot | STOP - REQUIRED |
+| Screenshot generation fails | Fall back to manual request or proceed with API data only (with warning) |
 | Complex without close-up | Request at Step 5 |
 | Guessing/adding extras | Extract API, validate screenshot |
 | Component exists in shared | Reuse (skip) |

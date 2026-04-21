@@ -32,9 +32,21 @@ To uninstall:
 ./scripts/manage-skills.sh uninstall
 ```
 
-## Quick Start
+## Prerequisites
 
-Set your Figma access token: `export FIGMA_ACCESS_TOKEN=figd_...` ([Get token](https://www.figma.com/settings))
+**Required:**
+
+- Figma Personal Access Token: `export FIGMA_ACCESS_TOKEN=figd_...` ([Get token](https://www.figma.com/settings))
+- Add to your shell profile (~/.zshrc or ~/.bashrc) for persistence
+
+**Technical Architecture:**
+
+- Skills use Figma REST API for data extraction (nodes, properties, styles, variables)
+- Skills use Figma Images API for automatic screenshot generation (scale 2x-3x)
+- No external dependencies or plugins required
+- Works offline and in CI/CD environments
+
+## Quick Start
 
 Each skill takes a Figma URL:
 

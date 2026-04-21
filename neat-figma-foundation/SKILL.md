@@ -9,20 +9,9 @@ description: Use when user provides Figma URL(s) to extract design foundation (c
 
 ## Overview
 
-Extract design foundation (colors, typography, spacing, sizing, shadows) from Figma and generate theme files. Supports **multiple URLs** for multi-page libraries. Auto-detect setup, compare existing tokens, recommend changes, get approval, write.
+Extract foundation tokens from Figma, generate theme files. Multi-URL support for multi-page libraries.
 
-**Principle:** Detect → Extract → Merge → Compare → Recommend → Approve → Write
-
-## When to Use
-
-- User provides Figma URL(s) with foundation/design system/design tokens
-- User requests to import/update design foundation (colors, typography, spacing, shadows, sizing)
-- Theme files need updates from Figma designs
-- Foundation library spans multiple Figma pages
-
-## Input
-
-Accepts one or more Figma URLs for multi-page foundation libraries.
+**Flow:** Detect → Extract → Merge → Compare → Approve → Write
 
 ## Quick Reference
 
@@ -37,7 +26,7 @@ Accepts one or more Figma URLs for multi-page foundation libraries.
 
 ## Workflow
 
-### Step 1: Parse All Figma URLs
+### Step 1: Parse URLs & Verify Setup
 
 Warn about overwrites:
 
@@ -49,67 +38,87 @@ Commit your changes first if needed.
 Continue? (yes/no)
 ```
 
-If no: stop and exit.
-If yes: proceed.
+If no: stop. If yes: proceed.
 
-Extract `fileKey` and optional `nodeId` for each URL.
+Extract `fileKey` and optional `nodeId` per URL.
 
-Verify FIGMA_ACCESS_TOKEN exists. If missing, halt and prompt: "Set your Figma token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
+Verify FIGMA_ACCESS_TOKEN. If missing: "Set token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
 
-### Step 2: Auto-Detect Product Setup
+### Step 2: Auto-Detect Product
 
-See [references/product-detection.md](../references/product-detection.md) for framework detection.
+See [references/product-detection.md](../references/product-detection.md).
 
-Find theme directory following framework conventions (e.g., `src/theme` for React, `lib/constants` for Flutter, `Resources` for iOS).
+Find theme directory per framework (`src/theme`, `lib/constants`, `Resources`).
 
-### Step 3: Extract Design Foundation from Figma
+### Step 3: Extract Foundation
 
-For each URL, fetch node data from Figma.
+Fetch node data from Figma API per URL.
 
-Extract tokens:
+**Tokens:**
 
-- **Colors**: SOLID fills and strokes (visible) - **requires validation**
-- **Typography**: TEXT nodes (fontSize, fontWeight, lineHeight, fontFamily, letterSpacing) - high confidence
-- **Spacing**: auto-layout padding and itemSpacing - **requires validation**
-- **Sizing**: dimensions divisible by 4 - **requires validation**
-- **Shadows**: DROP_SHADOW and INNER_SHADOW - high confidence
+- **Colors**: SOLID fills/strokes (validation needed)
+- **Typography**: TEXT nodes (fontSize, fontWeight, lineHeight, fontFamily, letterSpacing)
+- **Spacing**: auto-layout padding/itemSpacing (validation needed)
+- **Sizing**: dimensions ÷ 4 (validation needed)
+- **Shadows**: DROP_SHADOW/INNER_SHADOW
 
-Track usage and source nodes per token. If multiple URLs, merge and deduplicate.
+Track usage/source. Merge and deduplicate across URLs.
 
-**CRITICAL: Screenshot Verification for Colors/Spacing/Sizing**
+**CRITICAL: Dual-Source Extraction (API + Screenshot)**
 
-When color, spacing, or sizing tokens are detected:
+API = precise values (no names). Screenshot = semantic names + structure.
 
-1. **Extract primitive values** from Figma:
-   - Colors: raw hex/rgb values (e.g., `#FF0000`, `rgba(255, 0, 0, 1)`)
-   - Spacing: raw pixel values (e.g., [4, 8, 12, 16, 32, 48, 64, 80])
-   - Sizing: raw pixel values (e.g., [24, 32, 40, 48, 64])
-2. **PAUSE and request screenshot**: "I found color/spacing/sizing values in your Figma file. To ensure accurate semantic token names, please screenshot your Figma **Variables panel** (Local Variables → Colors/Spacing/Sizing sections) and provide it."
-3. **Wait for screenshot** - do NOT create arbitrary token names
-4. **Read screenshot** to extract correct semantic token definitions:
-   - Token name (e.g., `color/primary`, `semantic/space/xl`, `spacing/xl`, `xl`)
-   - Mapped value (e.g., `{primitive/color/red-500}`, `{primitive/space/32}`, or raw value)
-5. **Validate mapping**: Match screenshot definitions to extracted primitive values
-6. **Generate theme files** with validated token names and values
+**Process:**
 
-**Why this matters:** Pattern-based extraction finds raw values (hex codes, pixel values) but cannot determine semantic token names. AI might invent names like `primary-blue` when the actual token is `brand-accent`. Figma's Variables panel shows the actual token structure. Screenshot verification prevents incorrect mappings.
+1. Extract values from API (hex/rgb, pixels)
 
-**If user cannot provide screenshot:**
-- Ask which token names to use for each value
-- Document that mappings are user-provided, not validated
-- Warn: "These token names are not validated against Figma Variables. Verify correctness."
+2. Generate Variables panel screenshot:
 
-### Step 4: Generate Theme Files
+   ```bash
+   # Export Variables panel screenshot via Figma API
+   SCREENSHOT_URL=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+     "https://api.figma.com/v1/images/${fileKey}?ids=${nodeId}&format=png&scale=2" \
+     | jq -r '.images["'${nodeId}'"]')
+   
+   # Download screenshot
+   curl -s "$SCREENSHOT_URL" -o /tmp/figma-variables-panel.png
+   ```
 
-Generate theme files with usage comments in the appropriate format for the detected framework and language.
+   If fails, request: "Upload Variables panel screenshot (Local Variables → Colors/Spacing/Sizing). REQUIRED for semantic names."
 
-### Step 5: Check for Existing Components
+3. Read screenshot for names (PRIMARY SOURCE): `color/primary`, `spacing/xl`, structure chains
 
-After generating theme files, check if components already exist with hardcoded design values:
+4. Match: Screenshot name + API value = `color/primary` = `#FF0000`
 
-1. Search `<component-dir>/` and `<screen-dir>/*/` for component files
-2. Grep for hardcoded color values (hex codes, rgb/rgba)
-3. If found, present report:
+5. Generate with semantic names (screenshot) + precise values (API)
+
+**Why both:** API only = guessed names (WRONG). Screenshot only = imprecise values. Both = correct.
+
+**No screenshot:** Ask user for names, document as unvalidated.
+
+### Step 4: Generate & Verify
+
+Generate theme files with usage comments per framework/language.
+
+Verify against screenshot:
+
+```bash
+open /tmp/figma-variables-panel.png
+```
+
+**Checklist:**
+
+1. ✅ Names match screenshot (`color/primary` not `primaryColor`)
+2. ✅ Values precise from API (`#0066CC` not approximations)
+3. ✅ Structure preserved (semantic → alias → primitive)
+4. ✅ All screenshot tokens included
+5. ✅ No extra tokens
+
+If mismatches: regenerate.
+
+### Step 5: Check Components
+
+Search `<component-dir>/`, `<screen-dir>/*/` for hardcoded values (hex, rgb/rgba):
 
 ```
 Found {N} components with hardcoded values:
@@ -118,9 +127,7 @@ Found {N} components with hardcoded values:
 Refactor to use theme tokens? (yes/no/manual)
 ```
 
-- **yes**: For each component, replace hardcoded values with theme token imports
-- **no**: Skip refactoring, document in report
-- **manual**: List components and values, user refactors
+**yes**: Replace with imports | **no**: Skip, document | **manual**: List for user
 
 ## Prerequisites
 
@@ -142,11 +149,12 @@ product/
 
 | Issue | Solution |
 |-------|----------|
-| Token name generation unclear | Inspect node names in Figma for context, ask user for preferred names |
+| Token name generation unclear | Inspect node names in Figma, ask user for preferred names |
 | Breaking changes to token values | Show comparison report, user approves changes |
 | Token name conflicts | Ask user for resolution |
-| Too many similar values | Filter by minimum usage threshold (e.g., used 10+ times) |
-| Spacing/sizing noise | Only extract values divisible by 4 (design system convention) |
-| Wrong color/spacing/sizing token names | **ALWAYS request screenshot of Figma Variables panel** - never guess semantic token names from raw values (hex codes, pixel values) |
-| User cannot provide screenshot | Ask user to manually specify token names for each value, document as user-provided |
-| Screenshot shows alias tokens | Extract both the semantic name and resolved primitive value (e.g., `primary → {primitive/color/blue-500} → #0066CC`, `xl → {primitive/space/32} → 32`) |
+| Too many similar values | Filter by minimum usage threshold (used 10+ times) |
+| Spacing/sizing noise | Only extract values divisible by 4 |
+| Wrong token names | ALWAYS use screenshot for semantic names (PRIMARY SOURCE), API for precise values |
+| Screenshot generation fails | Fall back to manual request - semantic names ESSENTIAL, cannot be guessed |
+| Screenshot shows alias tokens | Extract full chain (`primary → {brand/red} → {primitive/red-500} → #FF0000`) |
+| API/screenshot value mismatch | Trust API for value, screenshot for name |
