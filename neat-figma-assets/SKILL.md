@@ -44,7 +44,7 @@ User provides Figma URL with images, logos, icons, or illustrations.
 
 ## Workflow
 
-### Step 1: Parse Figma URL
+### Step 1: Parse Figma URL and Validate
 
 Warn about overwrites:
 
@@ -61,6 +61,15 @@ If yes: proceed.
 
 Extract `fileKey` and `nodeId` from URL. The `node-id` parameter is required and should point to a PAGE or FRAME node containing assets (not a component node).
 
+**Validate node-id presence:**
+
+```bash
+if [ -z "$nodeId" ]; then
+  echo "ERROR: node-id is required. Provide URL with ?node-id=X-Y parameter."
+  exit 1
+fi
+```
+
 Verify FIGMA_ACCESS_TOKEN exists. If missing, halt and prompt: "Set your Figma token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
 
 ### Step 2: Auto-Detect Product Setup
@@ -71,22 +80,23 @@ Find `<asset-dir>` following framework conventions (e.g., `src/assets` for React
 
 ### Step 2.5: Check Existing Markdown
 
-Check if `docs/design-system/assets.md` exists and compare versions:
+Check if `docs/design-system/assets.md` exists. Compare versions:
 
 ```bash
-if [ -f "docs/design-system/assets.md" ]; then
-  STORED_VERSION=$(grep "figmaVersion:" docs/design-system/assets.md | cut -d'"' -f2)
-  CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-    "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version')
-  GIT_STATUS=$(git status --porcelain docs/design-system/assets.md 2>/dev/null)
-fi
+STORED_VERSION=$(grep "figmaVersion:" docs/design-system/assets.md | cut -d'"' -f2 || echo "unknown")
+CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version // "unknown"')
+GIT_STATUS=$(git status --porcelain docs/design-system/assets.md 2>/dev/null || echo "")
 ```
 
-**If versions match AND no edits:** Prompt to use existing (skip to Step 11) or force re-extract (continue).
+**If API fails:** Prompt "Continue with re-extraction (skips version check)?" If no: exit with "Fix API access or use existing markdown."
 
-**If versions differ OR has edits:** Prompt to use existing (preserves edits, validates nodeIds) or re-extract (shows diff in Step 9).
+| Condition | Options |
+|-----------|---------|
+| **Versions match, no edits** | 1. Use existing → Step 11 (validates nodeIds) 2. Force re-extract → Step 3 3. Cancel |
+| **Versions differ OR edits** | 1. Use existing → Step 11 (preserves edits) 2. Extract → Step 3 (shows diff at Step 9) 3. Cancel |
 
-**Note:** Using existing validates nodeIds before export. If nodes deleted/moved in Figma, export fails and requires re-extraction.
+**Option 1:** Validates nodeIds before export. If nodes deleted/moved, export fails. **Option 2:** Full re-extraction with diff review.
 
 ### Step 3: Generate Screenshot
 
@@ -143,26 +153,26 @@ Parse to flat list: `id`, `name`, `type`, `visible`, `absoluteBoundingBox`, `fil
 
 ### Step 6: Match to API Nodes
 
-For each asset, match using (try in order):
+| Priority | Method | Criteria | Action |
+|----------|--------|----------|--------|
+| 1 | Name | Fuzzy match, case-insensitive | "car" → "Car Illustration" |
+| 2 | Position | `absoluteBoundingBox` ±100px | Match screenshot location |
+| 3 | Size | Width/height ±20% | Match visual estimate |
+| 4 | Type | IMAGE, VECTOR, RECTANGLE/ELLIPSE with fills, INSTANCE | Filter node types |
+| 5 | Component | If INSTANCE, resolve componentId | Fetch component nodes, traverse for IMAGE/VECTOR |
+| 6 | Deep | No match in top 3 levels | Full depth traversal, position + size only |
 
-1. **Name matching**: Fuzzy, case-insensitive ("car" → "Car Illustration", "car-vector", "Car_Final_V2")
-2. **Position matching**: Match `absoluteBoundingBox` (±100px tolerance)
-3. **Size matching**: Match width/height to visual estimate (±20% range)
-4. **Type filtering**: IMAGE, VECTOR, RECTANGLE/ELLIPSE with fills, INSTANCE nodes
-5. **Component resolution**: If INSTANCE, resolve componentId:
+**Component resolution:**
 
-   ```bash
-   curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-     "https://api.figma.com/v1/files/${fileKey}/nodes?ids=${componentId}" \
-     > /tmp/figma-component-${componentId}.json
-   ```
+```bash
+curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}/nodes?ids=${componentId}" \
+  > /tmp/figma-component-${componentId}.json
+```
 
-   Traverse for underlying IMAGE/VECTOR nodes.
-6. **Deep nesting**: If no match in top 3 levels, traverse full depth, match by position + size only.
+**Record:** `nodeId`, `name`, `type`, `bounds`, `classification`. Multiple matches: pick closest or prompt.
 
-**Record:** `nodeId`, `name`, `type`, `bounds`, `classification`. If multiple candidates, pick closest position or ask user.
-
-**If no match:** Offer to show node tree, skip asset, or export entire frame.
+**No match:** Show node tree, skip, or export entire frame.
 
 ### Step 7: Classify Assets
 
@@ -177,7 +187,7 @@ Sanitize filenames (lowercase, alphanumeric, hyphens). Handle collisions with nu
 
 ### Step 8: Generate Markdown
 
-Ask for path (default: `docs/design-system`). Generate `<path>/assets.md`:
+Ask for markdown path (default: `docs/design-system`). Generate `<path>/assets.md`:
 
 ```markdown
 ---
@@ -274,9 +284,18 @@ Parse URLs per nodeId. Validate nodes exist:
 ```bash
 MISSING=$(echo "$SVG_EXPORT" | jq -r '.err // empty')
 if [ -n "$MISSING" ]; then
-  echo "ERROR: Nodes deleted/moved: $MISSING"
-  echo "Re-run Step 3 to update markdown"
-  exit 1
+  echo "ERROR: Nodes deleted/moved in Figma: $MISSING"
+  echo ""
+  echo "Options:"
+  echo "1. Re-run full extraction (Step 3) to detect current assets"
+  echo "2. Edit markdown nodeIds manually and retry export"
+  echo "3. Cancel"
+  read -p "Choose (1/2/3): " choice
+  case $choice in
+    1) echo "Restart extraction from Step 3"; exit 1 ;;
+    2) echo "Edit docs/design-system/assets.md, then re-run with existing markdown"; exit 1 ;;
+    3) echo "Cancelled"; exit 1 ;;
+  esac
 fi
 ```
 

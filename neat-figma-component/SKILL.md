@@ -66,49 +66,23 @@ If missing: "Create {suggested-path}? (yes/custom/skip)"
 
 ### Step 2.5: Check for Existing Markdown (Cross-Skill Awareness)
 
-Extract component name from node/URL. Check if markdown exists and compare Figma version:
+Extract component name. Check if `docs/design-system/components/${COMPONENT_NAME}.md` exists. Compare versions:
 
 ```bash
-if [ -f "docs/design-system/components/${COMPONENT_NAME}.md" ]; then
-  STORED_VERSION=$(grep "figmaVersion:" "docs/design-system/components/${COMPONENT_NAME}.md" | cut -d'"' -f2)
-  CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-    "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version')
-  GIT_STATUS=$(git status --porcelain "docs/design-system/components/${COMPONENT_NAME}.md" 2>/dev/null)
-fi
+STORED_VERSION=$(grep "figmaVersion:" <markdown> | cut -d'"' -f2 || echo "unknown")
+CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version // "unknown"')
+GIT_STATUS=$(git status --porcelain <markdown> 2>/dev/null || echo "")
 ```
 
-**If versions match AND no manual edits:**
+**If API fails:** Prompt "Continue with re-extraction (skips version check)?" If no: exit with "Fix API access or use existing markdown."
 
-```
-Component markdown up-to-date (Figma version {version})
+| Condition | Options |
+|-----------|---------|
+| **Versions match, no edits** | 1. Use existing → Step 17 (markdown-only) 2. Force re-extract → Step 3 3. Cancel |
+| **Versions differ OR edits** | 1. Use existing → Step 17 (preserves edits) 2. Extract → Step 3 (shows diff at Step 15) 3. Cancel |
 
-Options:
-1. Use existing → skip to code generation (Step 17) [REQUIRES screenshot from Step 1 first]
-2. Force re-extract (continue to Step 3)
-3. Cancel
-
-Choose (1/2/3):
-```
-
-**Note:** Option 1 still requires screenshot generation at Step 1 for validation (Step 17).
-
-**If versions differ OR manual edits:**
-
-```
-Component markdown needs update:
-- Stored version: {storedVersion}
-- Current version: {currentVersion}
-- Manual edits: {yes/no}
-
-Options:
-1. Use existing → skip to code generation (Step 17) [preserves edits, may be stale, REQUIRES screenshot from Step 1 first]
-2. Extract from Figma → update (continue to Step 3) [Step 15 shows diff]
-3. Cancel
-
-Choose (1/2/3):
-```
-
-**Note:** Option 1 still requires screenshot generation at Step 1 for validation (Step 17).
+**Option 1:** Markdown-only validation (no screenshot). **Option 2:** Full re-extraction with diff review.
 
 ### Step 3: Determine Extraction Location
 
@@ -174,14 +148,22 @@ If INSTANCE: "Extract {NestedComponentName}? (yes/no/placeholder)"
 
 ### Step 8: Resolve Styling
 
-Check `<theme-dir>/`.
+Check `<theme-dir>/` and validate token availability.
 
-**Exists:** Match values to tokens (`#0066CC` → `colors.primary`), generate imports
+**Theme directory exists:**
 
-**Missing:**
+1. **Read theme files** using Read tool (language-specific: `colors.ts`, `colors.swift`, `colors.kt`)
+2. **Parse exports** to extract available token names (e.g., `export const primary = "#0066CC"`)
+3. **Match component values** to tokens by comparing hex/RGB values
+4. **If specific token found:** Generate import statement
+5. **If specific token missing:** Hardcode with `// TODO: add {tokenName} to theme (value: {hexValue})`
 
-- Multiple: "Run `/neat-figma-foundation` first, or hardcode?"
-- Single: Hardcode with `// TODO`
+**Validation approach:** Read file contents and grep for token names, not file system checks
+
+**Theme directory missing:**
+
+- Multiple components pending: "Run `/neat-figma-foundation` first, or hardcode?"
+- Single component: Hardcode with `// TODO: extract theme tokens`
 
 ### Step 9: Generate Component Code
 

@@ -9,7 +9,7 @@ description: Use when user provides Figma URL(s) to extract design foundation (c
 
 ## Overview
 
-Extract foundation tokens from Figma, generate theme files. Multi-URL support for multi-page libraries.
+Extract theme tokens from Figma, generate theme files. Multi-URL support for multi-page libraries.
 
 **Flow:** Detect → Extract → Markdown → Diff → Approve → Code
 
@@ -19,10 +19,10 @@ Extract foundation tokens from Figma, generate theme files. Multi-URL support fo
 
 | Item | Value |
 |------|-------|
-| **Input** | One or more Figma URLs (node-id optional) |
+| **Input** | One or more Figma URLs (node-id optional - targets specific token panels if provided) |
 | **Output** | `<theme-dir>/colors.ts`, `typography.ts`, etc. |
-| **Prerequisites** | FIGMA_ACCESS_TOKEN, product path |
-| **Multi-page support** | Yes - merges tokens from multiple URLs |
+| **Prerequisites** | FIGMA_ACCESS_TOKEN (file_content:read scope), product path |
+| **Multi-page support** | Yes - merges theme tokens from multiple URLs |
 | **Token categories** | Colors, typography, spacing, sizing, shadows |
 | **Comparison** | Shows new/changed/removed tokens |
 
@@ -44,6 +44,11 @@ If no: stop. If yes: proceed.
 
 Extract `fileKey` and optional `nodeId` per URL.
 
+**Node-id usage:**
+
+- **If provided:** Screenshot and extract tokens from specific FRAME nodes
+- **If missing:** Search entire file for token panels matching naming patterns (e.g., "Token", "Foundation", "Primitives")
+
 Verify FIGMA_ACCESS_TOKEN. If missing: "Set token: `export FIGMA_ACCESS_TOKEN=figd_xxxxx`"
 
 ### Step 2: Auto-Detect Product
@@ -54,120 +59,93 @@ Find theme directory per framework (`src/theme`, `lib/constants`, `Resources`).
 
 ### Step 2.5: Check for Existing Markdown (Cross-Skill Awareness)
 
-Before extracting from Figma, check if foundation markdown exists and compare Figma version:
+Check if `docs/design-system/foundation.md` exists. Compare versions:
 
 ```bash
-if [ -f "docs/design-system/foundation.md" ]; then
-  # Extract stored Figma version
-  STORED_VERSION=$(grep "figmaVersion:" docs/design-system/foundation.md | cut -d'"' -f2)
-  
-  # Fetch current Figma version
-  CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-    "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version')
-  
-  # Check if manually edited
-  GIT_STATUS=$(git status --porcelain docs/design-system/foundation.md 2>/dev/null)
-fi
+STORED_VERSION=$(grep "figmaVersion:" docs/design-system/foundation.md | cut -d'"' -f2 || echo "unknown")
+CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version // "unknown"')
+GIT_STATUS=$(git status --porcelain docs/design-system/foundation.md 2>/dev/null || echo "")
 ```
 
-**If versions match AND no manual edits:**
+**If API fails:** Prompt "Continue with re-extraction (skips version check)?" If no: exit with "Fix API access or use existing markdown."
 
-```
-Foundation markdown up-to-date (Figma version {version}, no changes)
+| Condition | Options |
+|-----------|---------|
+| **Versions match, no edits** | 1. Use existing → Step 9 (markdown-only) 2. Force re-extract → Step 3 3. Cancel |
+| **Versions differ OR edits** | 1. Use existing → Step 9 (preserves edits) 2. Extract → Step 3 (shows diff at Step 7) 3. Cancel |
 
-Options:
-1. Use existing markdown → skip to code generation (Step 9)
-2. Force re-extract from Figma (continue to Step 3)
-3. Cancel
-
-Choose (1/2/3):
-```
-
-**If versions differ OR manual edits detected:**
-
-```
-Foundation markdown needs update:
-- Stored Figma version: {storedVersion}
-- Current Figma version: {currentVersion}
-- Manual edits: {yes/no}
-
-Options:
-1. Use existing markdown → skip to code generation (Step 9) [preserves manual edits, ignores Figma updates]
-2. Extract from Figma → update markdown (continue to Step 3) [Step 7 will show diff including version]
-3. Cancel → review changes first
-
-Choose (1/2/3):
-```
-
-**Option 1:** Skip to Step 9 (preserves manual edits, may be stale)
-**Option 2:** Continue extraction (Step 7 shows diff with version info)
-**Option 3:** Stop
+**Option 1:** Markdown-only validation (no screenshot). **Option 2:** Full re-extraction with diff review.
 
 ### Step 3: Extract Foundation
 
-Fetch node data from Figma API per URL.
-
-**Tokens:**
-
-- **Colors**: SOLID fills/strokes (validation needed)
-- **Typography**: TEXT nodes (fontSize, fontWeight, lineHeight, fontFamily, letterSpacing)
-- **Spacing**: auto-layout padding/itemSpacing (validation needed)
-- **Sizing**: dimensions ÷ 4 (validation needed)
-- **Shadows**: DROP_SHADOW/INNER_SHADOW
-
-Track usage/source. Merge and deduplicate across URLs.
-
-**CRITICAL: Dual-Source Extraction (API + Screenshot)**
-
-API = precise values (no names). Screenshot = semantic names + structure.
-
-**Process:**
-
-1. Extract values from API (hex/rgb, pixels)
-
-2. Generate Variables panel screenshot:
-
-   ```bash
-   # Export Variables panel screenshot via Figma API
-   SCREENSHOT_URL=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-     "https://api.figma.com/v1/images/${fileKey}?ids=${nodeId}&format=png&scale=2" \
-     | jq -r '.images["'${nodeId}'"]')
-   
-   # Download screenshot
-   curl -s "$SCREENSHOT_URL" -o /tmp/figma-variables-panel.png
-   ```
-
-   If fails, request: "Upload Variables panel screenshot (Local Variables → Colors/Spacing/Sizing). REQUIRED for semantic names."
-
-3. Read screenshot for names (PRIMARY SOURCE): `color/primary`, `spacing/xl`, structure chains
-
-4. Match: Screenshot name + API value = `color/primary` = `#FF0000`
-
-5. Generate with semantic names (screenshot) + precise values (API)
-
-**Why both:** API only = guessed names (WRONG). Screenshot only = imprecise values. Both = correct.
-
-**No screenshot:** Ask user for names, document as unvalidated.
-
-### Step 4: Generate & Verify
-
-Generate theme files with usage comments per framework/language.
-
-Verify against screenshot:
+**Screenshot each token panel individually at high resolution:**
 
 ```bash
-open /tmp/figma-variables-panel.png
+# Find all FRAME nodes containing token tables
+NODE_TYPE="FRAME"
+FILTER_PATTERN="Token"
+SCALE=3
+
+# Fetch file and find matching nodes
+NODES=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}" | \
+  jq -r --arg type "$NODE_TYPE" --arg pattern "$FILTER_PATTERN" '
+    .. | objects |
+    select(.type == $type and (.name | test($pattern))) |
+    "\(.id)|\(.name)"
+  ')
+
+# Screenshot each node
+echo "$NODES" | while IFS='|' read -r node_id node_name; do
+  safe_name=$(echo "$node_name" | tr '/ ' '_' | tr -cd '[:alnum:]_-')
+  output_path="/tmp/figma-node-${safe_name}.png"
+  
+  # Get screenshot URL
+  screenshot_url=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+    "https://api.figma.com/v1/images/${fileKey}?ids=${node_id}&scale=${SCALE}&format=png" | \
+    jq -r ".images[\"${node_id}\"]")
+  
+  # Download screenshot
+  curl -s "$screenshot_url" -o "$output_path"
+  echo "Screenshot saved: $output_path"
+done
 ```
 
-**Checklist:**
+Generates scale=3 screenshots: `/tmp/figma-node-{PanelName}.png` (one per token panel).
 
-1. ✅ Names match screenshot (`color/primary` not `primaryColor`)
-2. ✅ Values precise from API (`#0066CC` not approximations)
-3. ✅ Structure preserved (semantic → alias → primitive)
-4. ✅ All screenshot tokens included
-5. ✅ No extra tokens
+**Rationale:** Individual panels at scale=3 make token names/values readable (vs. full canvas = tiny text).
 
-If mismatches: regenerate.
+**Read each screenshot:** Extract token table (Name, Value, Description) → Parse to JSON:
+
+```json
+{"name": "color/primary", "value": "#0066CC", "description": "Primary brand color"}
+```
+
+**Token types:** Primitive (`color/red/500`), semantic (`color/primary` → `{color/red/500}`), component (`button/bg` → `{color/primary}`). Preserve reference chains.
+
+### Step 4: Extract Tokens from Panel Screenshots
+
+For each screenshot, read and parse the token table:
+
+| Column | Content | Example |
+|--------|---------|---------|
+| 1 | Token name | `color/primary`, `spacing/md` |
+| 2 | Value | `#0066CC`, `16px`, `{ref}` (alias) |
+| 3 | Description | Usage notes (optional) |
+
+**Extract to JSON:**
+
+```json
+{"panel": "GUI_SemanticColorTokens", "tokens": [
+  {"name": "color/primary", "value": "{color/brand/blue-600}", "type": "alias"},
+  {"name": "color/brand/blue-600", "value": "#0066CC", "type": "primitive"}
+]}
+```
+
+**Aliases:** `{reference}` → mark as alias, track chain, resolve later.
+
+**Verify:** Spot-check 5-10 tokens against screenshot.
 
 ### Step 5: Fetch Figma Version
 
@@ -306,7 +284,7 @@ You can:
 Ready to generate code? (yes/no/later)
 ```
 
-**yes:** Proceed to Step 8
+**yes:** Proceed to Step 9
 **no/later:** Stop, user can edit markdown and run generation later
 
 ### Step 9: Generate Code from Markdown
@@ -328,7 +306,7 @@ Read markdown file and generate theme files:
 
 **Output:** `<theme-dir>/colors.*`, `typography.*`, `spacing.*`, etc.
 
-Verify against screenshot (same checklist as current Step 4).
+**Note:** When regenerating from markdown, validation uses structured markdown fields instead of screenshot comparison.
 
 ### Step 10: Check Components
 
@@ -345,7 +323,20 @@ Refactor to use theme tokens? (yes/no/manual)
 
 ## Prerequisites
 
-See [references/prerequisites.md](../references/prerequisites.md)
+**Figma Access Token:**
+
+- Required scope: `file_content:read`
+- Optional scope: `file_metadata:read`
+- **NOT required:** `file_variables:read` (Variables API - not always available)
+
+**Token generation:**
+
+1. Visit <https://www.figma.com/settings>
+2. Personal access tokens → Generate new token
+3. Select: `file_content:read` + `file_metadata:read`
+4. `export FIGMA_ACCESS_TOKEN=figd_your_token`
+
+See [references/prerequisites.md](../references/prerequisites.md) for more details.
 
 ## Output Files
 
@@ -382,23 +373,23 @@ Foundation exports theme tokens that components and pages import. Token contract
 
 **Validation expectations:**
 
-Components and pages check for `<theme-dir>/` existence and import available tokens. If tokens exist, they replace hardcoded values. If tokens don't exist or specific token missing, components hardcode with `// TODO: use theme token` comment.
+Components and pages check for `<theme-dir>/` existence and import available theme tokens. If theme tokens exist, they replace hardcoded values. If theme tokens don't exist or specific token missing, components hardcode with `// TODO: use theme token` comment.
 
 **Token naming convention:** Use `/` separator for hierarchy (`color/primary`, `spacing/md`) to enable tree-shaking and autocomplete.
 
 ## Common Issues
 
-| Issue | Solution |
-|-------|----------|
-| Token name generation unclear | Inspect node names in Figma, ask user for preferred names |
-| Breaking changes to token values | Show comparison report, user approves changes |
-| Token name conflicts | Ask user for resolution |
-| Too many similar values | Filter by minimum usage threshold (used 10+ times) |
-| Spacing/sizing noise | Only extract values divisible by 4 |
-| Wrong token names | ALWAYS use screenshot for semantic names (PRIMARY SOURCE), API for precise values |
-| Screenshot generation fails | Fall back to manual request - semantic names ESSENTIAL, cannot be guessed |
-| Screenshot shows alias tokens | Extract full chain (`primary → {brand/red} → {primitive/red-500} → #FF0000`) |
-| API/screenshot value mismatch | Trust API for value, screenshot for name |
+| Issue | Root Cause | Solution |
+|-------|-----------|----------|
+| **Screenshot text too small to read** | Entire canvas screenshotted instead of individual panels | Screenshot each token panel separately at scale=3 (see Step 3 panel-by-panel screenshot pattern) |
+| **Token names unclear in screenshot** | Low resolution or poor contrast | Increase scale to 3 or 4, verify panel background is light/white |
+| **Alias references unclear** | Value shows `{ref}` but can't read ref name | Zoom into alias column, cross-reference with primitive tokens panel |
+| **Breaking changes to token values** | Designer updated colors/spacing in Figma | Show comparison report with diff, user reviews and approves changes before regenerating code |
+| **Token name conflicts** | Multiple tokens map to same name | Ask user for resolution: keep primitive, rename semantic, or merge |
+| **Too many similar values** | Design not using consistent scale | Filter by minimum usage threshold (used 10+ times) or present all with usage counts |
+| **Spacing/sizing noise** | Random pixel values not on 4px grid | Only extract values divisible by 4, flag outliers for review |
+| **Alias token chains incomplete** | Circular references or missing primitives | Recursively resolve: `semantic → alias → primitive → value`, detect cycles |
+| **Multiple modes (light/dark/brand)** | Design system uses Figma modes for theming | Screenshot each mode separately (if panels show mode selector), extract all modes |
 
 ## Regenerating Code from Existing Markdown
 

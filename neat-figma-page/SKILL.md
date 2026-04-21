@@ -52,50 +52,23 @@ See [references/product-detection.md](../references/product-detection.md). Find 
 
 ### Step 2.5: Check for Existing Markdown (Cross-Skill Awareness)
 
-Before extracting page, determine page name and check if markdown exists:
+Determine page name. Check if `docs/design-system/pages/${PAGE_NAME}.md` exists. Compare versions:
 
 ```bash
-# Extract page name from nodeId or prompt user
-if [ -f "docs/design-system/pages/${PAGE_NAME}.md" ]; then
-  STORED_VERSION=$(grep "figmaVersion:" "docs/design-system/pages/${PAGE_NAME}.md" | cut -d'"' -f2)
-  CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
-    "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version')
-  GIT_STATUS=$(git status --porcelain "docs/design-system/pages/${PAGE_NAME}.md" 2>/dev/null)
-fi
+STORED_VERSION=$(grep "figmaVersion:" <markdown> | cut -d'"' -f2 || echo "unknown")
+CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+  "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version // "unknown"')
+GIT_STATUS=$(git status --porcelain <markdown> 2>/dev/null || echo "")
 ```
 
-**If versions match AND no manual edits:**
+**If API fails:** Prompt "Continue with re-extraction (skips version check)?" If no: exit with "Fix API access or use existing markdown."
 
-```
-Page markdown up-to-date (Figma version {version})
+| Condition | Options |
+|-----------|---------|
+| **Versions match, no edits** | 1. Use existing → Step 7.8 (markdown-only) 2. Force re-extract → Step 3 3. Cancel |
+| **Versions differ OR edits** | 1. Use existing → Step 7.8 (preserves edits) 2. Extract → Step 3 (shows diff at Step 7.6) 3. Cancel |
 
-Options:
-1. Use existing → skip to code generation (Step 7.8) [REQUIRES screenshot from Step 7.1 first]
-2. Force re-extract (continue to Step 3)
-3. Cancel
-
-Choose (1/2/3):
-```
-
-**Note:** Option 1 still requires screenshot generation at Step 7.1 for validation (Step 7.9).
-
-**If versions differ OR manual edits:**
-
-```
-Page markdown needs update:
-- Stored version: {storedVersion}
-- Current version: {currentVersion}
-- Manual edits: {yes/no}
-
-Options:
-1. Use existing → skip to code generation (Step 7.8) [preserves edits, may be stale, REQUIRES screenshot from Step 7.1 first]
-2. Extract from Figma → update (continue to Step 3) [Step 7.6 shows diff]
-3. Cancel
-
-Choose (1/2/3):
-```
-
-**Note:** Option 1 still requires screenshot generation at Step 7.1 for validation (Step 7.9).
+**Option 1:** Markdown-only validation (no screenshot). **Option 2:** Full re-extraction with diff review.
 
 ### Step 3: Fetch Figma Structure
 
@@ -169,7 +142,7 @@ For each unique component:
 4. **If in `<screen-dir>/OtherPage/`:** Prompt: "⚠️ {ComponentName} in OtherPage/ — {CurrentPage} needs it (2+ pages). Move to {component-dir}/? (yes/no)"
    - yes: Move, verify, update imports, roll back on failure
    - no: Duplicate
-5. **If NOT found:** Construct URL, invoke `/neat-figma-component`
+5. **If NOT found:** Construct URL with format `https://figma.com/file/{fileKey}?node-id={componentNodeId}`, invoke `/neat-figma-component`
 
 Component extraction requests own screenshot (intentional). Extract only THIS page needs.
 
@@ -177,46 +150,37 @@ Component extraction requests own screenshot (intentional). Extract only THIS pa
 
 If images/icons detected in page:
 
-1. Extract nodeId and classification from API
-2. Generate screenshot for each asset to document visual appearance
-3. Determine expected paths (assets/images/, assets/icons/)
-4. Document in page markdown (Step 7.5 Assets section)
+1. Identify the containing FRAME/PAGE node that holds all page assets
+2. For each asset: Extract individual nodeId, classification, and visual properties from API
+3. Generate screenshot for each asset to document visual appearance
+4. Determine expected paths (assets/images/, assets/icons/)
+5. Document in page markdown with both container nodeId and individual asset nodeIds
 
 **Do NOT extract assets yet** - page markdown documents what's needed, extraction happens separately.
 
+**NodeId roles:**
+
+| Type | Used For | Usage |
+|------|----------|-------|
+| Container | `/neat-figma-assets` invocation | Passed to assets skill for extraction |
+| Individual | Documentation/validation | NOT used by assets skill (does visual detection) |
+
+**Markdown format:**
+
 ```markdown
 ## Assets
+**Container nodeId**: 100:200
 
 ### hero-background
-- **nodeId**: 123:456
-- **type**: illustration
-- **expectedPath**: assets/images/hero-background.svg
-- **size**: 400px × 300px
-- **usage**: Page header background
-- **status**: pending_extraction
-- **screenshot**: Generated at Step 7.4
-
-### product-icon
-- **nodeId**: 123:457
-- **type**: icon
-- **expectedPath**: assets/icons/product.svg
-- **size**: 24px × 24px
-- **usage**: Product feature list
-- **status**: pending_extraction
-- **screenshot**: Generated at Step 7.4
+- **nodeId**: 123:456, **type**: illustration, **expectedPath**: assets/images/hero-background.svg
+- **size**: 400px × 300px, **usage**: Page header, **status**: pending_extraction
 ```
 
-**Rationale:** Asset extraction uses markdown-first workflow (requires user review/approval). Decoupling allows:
-
-- Page completion without asset pauses
-- Asset review/editing before extraction
-- Batch asset extraction across multiple pages
-
-Asset screenshots generated during documentation provide visual reference for later extraction.
+**Rationale:** Decouples page completion from asset extraction (allows review, batch extraction).
 
 #### 7.5 Generate Markdown Documentation
 
-Ask for path:
+Ask for markdown path:
 
 ```
 Path for markdown documentation? (default: docs/design-system)
@@ -363,13 +327,13 @@ If page markdown has documented assets (status: pending_extraction):
 Extract assets now? (yes/later/batch)
 ```
 
-**yes:** Construct Figma URL with node-id parameter and invoke `/neat-figma-assets`:
+**yes:** Construct Figma URL with container node-id and invoke `/neat-figma-assets`:
 
 ```
-https://figma.com/file/{fileKey}?node-id={nodeId}
+https://figma.com/file/{fileKey}?node-id={containerNodeId}
 ```
 
-Pass this URL to `/neat-figma-assets` (which expects URL with node-id parameter, not raw nodeId)
+Pass this URL to `/neat-figma-assets` using the **container nodeId** from page markdown (not individual asset nodeIds). Assets skill expects URL with node-id parameter pointing to PAGE or FRAME containing all assets.
 
 **later:** User extracts manually when ready
 **batch:** User will extract all page assets together later
