@@ -9,11 +9,13 @@ description: Use when user provides Figma URL to extract images, logos, icons, i
 
 ## Overview
 
-Extract and organize design assets from Figma using screenshot-first visual detection. Auto-classifies and generates import structure.
+Extract and organize design assets from Figma using screenshot-first visual detection.
 
-**Principle:** Screenshot → Visual Detect → API Match → Classify → Export → Download → Validate
+**Flow:** Screenshot → Detect → Match → Classify → Document → Export → Validate
 
-**Why Screenshot-First:** Complex designs hide assets in deep nesting, component instances, and generic names. Screenshot provides visual context to identify what should be extracted, then API provides node IDs for export.
+**Markdown-first:** Generate inventory documentation, show diffs, then export files.
+
+**Why Screenshot-First:** Complex designs hide assets in nested structures with generic names. Screenshot provides visual context for identification, API provides node IDs for export.
 
 ## When to Use
 
@@ -34,23 +36,11 @@ User provides Figma URL with images, logos, icons, or illustrations.
 
 ## Screenshot-First Detection Strategy
 
-```
-TRADITIONAL (fails):                  SCREENSHOT-FIRST (works):
-API → Search node tree                Screenshot → Visual identification
-   → Find IMAGE nodes                    → "blue car illustration, center, ~400px"
-   → Miss: deep nesting                     
-   → Miss: INSTANCE nodes             API → Fetch full tree (depth=10)
-   → Miss: generic names                 → Match by position + size + name
-   → Blind extraction                    → Resolve components if needed
-                                          → Find: node "Car_V2" at x:450, y:300, 380px
-                                      
-                                       Export → Download matched nodes
-                                       
-                                       Validate → Compare against screenshot
-                                                → Ensure all visual assets extracted
-```
+**Traditional (fails):** API → Search IMAGE nodes → Misses deep nesting, INSTANCE nodes, generic names → Blind extraction
 
-**Key Insight:** Screenshot shows WHAT to extract (semantic), API provides HOW to extract (node IDs).
+**Screenshot-first (works):** Screenshot → Visual ID ("blue car, center, ~400px") → API tree (depth=10) → Match by position/size/name → Resolve components → Export matched nodes → Validate
+
+**Key:** Screenshot shows WHAT to extract (semantic), API provides HOW (node IDs).
 
 ## Workflow
 
@@ -59,7 +49,7 @@ API → Search node tree                Screenshot → Visual identification
 Warn about overwrites:
 
 ```
-This will overwrite existing assets.
+This will overwrite existing files.
 Figma is the source of truth - existing files will be replaced.
 Commit your changes first if needed.
 
@@ -79,160 +69,199 @@ See [references/product-detection.md](../references/product-detection.md) for fr
 
 Find `<asset-dir>` following framework conventions (e.g., `src/assets` for React, `assets` for Flutter, `Resources` for iOS).
 
-### Step 3: Generate Screenshot for Visual Detection
+### Step 2.5: Check Existing Markdown
 
-**CRITICAL: Screenshot-first approach** - visual context is PRIMARY source for asset detection.
+Check if `docs/design-system/assets.md` exists and compare versions:
 
 ```bash
-# Generate high-res screenshot of the design
+if [ -f "docs/design-system/assets.md" ]; then
+  STORED_VERSION=$(grep "figmaVersion:" docs/design-system/assets.md | cut -d'"' -f2)
+  CURRENT_VERSION=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
+    "https://api.figma.com/v1/files/${fileKey}" | jq -r '.version')
+  GIT_STATUS=$(git status --porcelain docs/design-system/assets.md 2>/dev/null)
+fi
+```
+
+**If versions match AND no edits:** Prompt to use existing (skip to Step 11) or force re-extract (continue).
+
+**If versions differ OR has edits:** Prompt to use existing (preserves edits, validates nodeIds) or re-extract (shows diff in Step 9).
+
+**Note:** Using existing validates nodeIds before export. If nodes deleted/moved in Figma, export fails and requires re-extraction.
+
+### Step 3: Generate Screenshot
+
+**CRITICAL:** Screenshot is PRIMARY source for asset detection.
+
+```bash
 SCREENSHOT_URL=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
   "https://api.figma.com/v1/images/${fileKey}?ids=${nodeId}&format=png&scale=2" \
   | jq -r '.images["'${nodeId}'"]')
 
 curl -s "$SCREENSHOT_URL" -o /tmp/figma-assets-detection-${nodeId}.png
-
-# Display for analysis
 open /tmp/figma-assets-detection-${nodeId}.png
 ```
 
-If API fails: "Upload screenshot of the design. REQUIRED for visual asset detection."
+If API fails: Request manual upload (REQUIRED).
 
-### Step 4: Visual Asset Identification
+### Step 4: Visual Identification
 
-Analyze screenshot to identify extractable assets by visual characteristics:
+Analyze screenshot to identify extractable assets.
 
-**Identify:**
-- Illustrations (focal graphics, decorative art, characters, objects)
-- Icons (UI symbols, action indicators, status markers)
-- Logos (brand marks, wordmarks, product logos)
-- Photos (product images, hero images, portraits)
-- Patterns (repeating graphics if used as discrete elements)
+**Extract:** Illustrations, icons, logos, photos, discrete patterns
+**Exclude:** UI chrome, background patterns, text, placeholder boxes
 
-**DON'T extract:**
-- UI chrome (buttons, inputs, containers shown as part of mockup)
-- Background patterns (if decorative texture, not discrete asset)
-- Text (unless it's part of logo SVG)
-- Placeholder boxes
+**Record per asset:**
 
-**Per asset, note:**
-1. Visual description ("blue car illustration", "search icon", "company logo")
-2. Approximate position (top-left, center, header, content area)
-3. Relative size (small icon ~24px, medium ~100px, large illustration ~400px+)
-4. Classification (icon/logo/illustration/photo)
+1. Description ("blue car illustration", "search icon")
+2. Position (top-left, center, header)
+3. Size (~24px, ~100px, ~400px+)
+4. Type (icon/logo/illustration/photo)
 
-Show list to user:
+Present list:
 
 ```
-Detected {N} assets from screenshot:
+Detected {N} assets:
 
-Icons (SVG):
-1. search icon - top-right, ~24px
-2. menu icon - top-left, ~24px
+Icons (SVG): search icon (top-right, ~24px), menu icon (top-left, ~24px)
+Illustrations (SVG): blue car (center, ~400px)
+Photos (PNG): hero image (header, ~1200px)
 
-Illustrations (SVG):
-3. blue car illustration - center content, ~400px
-
-Photos (PNG):
-4. hero image - header background, ~1200px
-
-Extract these? Or describe any I missed/misidentified.
-(yes/adjust)
+Extract these? Or describe any I missed/misidentified. (yes/adjust)
 ```
 
-If user adjusts: update list. If yes: proceed.
+Update if user adjusts, proceed if approved.
 
-### Step 5: Fetch Node Tree from Figma API
-
-Fetch full node tree with deep traversal:
+### Step 5: Fetch Node Tree
 
 ```bash
-# Fetch node tree
 curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
   "https://api.figma.com/v1/files/${fileKey}/nodes?ids=${nodeId}&depth=10" \
   > /tmp/figma-node-tree.json
 ```
 
-Parse response to build flat list of ALL nodes (recursive traversal). Include: `id`, `name`, `type`, `visible`, `absoluteBoundingBox`, `fills`, `componentId`.
+Parse to flat list: `id`, `name`, `type`, `visible`, `absoluteBoundingBox`, `fills`, `componentId`.
 
-### Step 6: Match Visual Assets to API Nodes
+### Step 6: Match to API Nodes
 
-For each visually identified asset:
+For each asset, match using (try in order):
 
-**Matching strategy** (try in order until match found):
+1. **Name matching**: Fuzzy, case-insensitive ("car" → "Car Illustration", "car-vector", "Car_Final_V2")
+2. **Position matching**: Match `absoluteBoundingBox` (±100px tolerance)
+3. **Size matching**: Match width/height to visual estimate (±20% range)
+4. **Type filtering**: IMAGE, VECTOR, RECTANGLE/ELLIPSE with fills, INSTANCE nodes
+5. **Component resolution**: If INSTANCE, resolve componentId:
 
-1. **Name matching**: Find nodes with matching names (case-insensitive, fuzzy)
-   - "car" matches "Car Illustration", "car-vector", "Car_Final_V2"
-
-2. **Position matching**: Filter nodes by approximate position from screenshot
-   - Visual "center content" → nodes with `absoluteBoundingBox` x: 400-800, y: 200-600
-   - Use loose bounds (±100px tolerance)
-
-3. **Size matching**: Filter by relative size from visual estimate
-   - Visual "~400px" → nodes with width/height 300-500px range
-
-4. **Type filtering**: Prefer IMAGE/VECTOR types, but include:
-   - IMAGE nodes (direct raster assets)
-   - VECTOR nodes (SVG graphics)
-   - RECTANGLE/ELLIPSE with image fills
-   - INSTANCE nodes (might reference component with asset)
-
-5. **Component resolution**: If matched node is INSTANCE
    ```bash
-   # Resolve component definition
    curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
      "https://api.figma.com/v1/files/${fileKey}/nodes?ids=${componentId}" \
      > /tmp/figma-component-${componentId}.json
    ```
-   - Traverse component tree to find underlying IMAGE/VECTOR nodes
-   - Use component's child IMAGE nodes for export
 
-6. **Deep nesting**: If no match in top 3 levels, traverse full depth
-   - Collect ALL IMAGE/VECTOR nodes regardless of nesting
-   - Match by position + size only (ignore names in deep nests)
+   Traverse for underlying IMAGE/VECTOR nodes.
+6. **Deep nesting**: If no match in top 3 levels, traverse full depth, match by position + size only.
 
-**Per matched asset:**
-- Record: `nodeId`, `name`, `type`, `bounds`, `classification`
-- If multiple candidates: pick closest position match or ask user
+**Record:** `nodeId`, `name`, `type`, `bounds`, `classification`. If multiple candidates, pick closest position or ask user.
 
-**If no match found:**
-```
-Could not find API node for: {visual description}
-
-Possible reasons:
-- Asset is embedded in component (will search component definitions)
-- Asset is background fill (show node tree for manual selection)
-- Asset is not exportable (e.g., CSS background)
-
-Should I:
-(a) Show full node tree for manual selection
-(b) Skip this asset
-(c) Export entire frame and crop manually
-```
+**If no match:** Offer to show node tree, skip asset, or export entire frame.
 
 ### Step 7: Classify Assets
 
-Confirm classification from Step 4 visual analysis. Allow user override:
+Confirm classification from Step 4, allow override:
 
-- **Icons**: ≤64px, UI-purpose, export as SVG
-- **Logos**: Brand graphics, export as SVG
-- **Illustrations**: >64px vector art, export as SVG
-- **Photos**: Raster images, export as PNG @2x, @3x
+- **Icons**: ≤64px, UI-purpose → SVG
+- **Logos**: Brand graphics → SVG
+- **Illustrations**: >64px vector art → SVG
+- **Photos**: Raster → PNG @2x, @3x
 
-Sanitize filenames (lowercase, alphanumeric + hyphens). Handle collisions with numbers.
+Sanitize filenames (lowercase, alphanumeric, hyphens). Handle collisions with numbers.
 
-### Step 8: Export via Figma API
+### Step 8: Generate Markdown
 
-Request export URLs for matched nodeIds:
+Ask for path (default: `docs/design-system`). Generate `<path>/assets.md`:
+
+```markdown
+---
+type: assets
+source: https://figma.com/file/{fileKey}?node-id={nodeId}
+figmaName: "{fileName}"
+figmaVersion: "{version}"
+figmaLastModified: "{lastModified}"
+extracted: {YYYY-MM-DDTHH:mm:ssZ}
+assetCount: {N}
+---
+
+# Assets
+
+## Icons (SVG)
+
+### search-icon
+- **nodeId**: 123:456
+- **path**: assets/icons/search.svg
+- **size**: 24px × 24px
+
+## Illustrations (SVG)
+
+### hero-illustration
+- **nodeId**: 123:458
+- **path**: assets/images/hero.svg
+- **size**: 400px × 300px
+
+## Photos (PNG)
+
+### product-photo
+- **nodeId**: 123:459
+- **path**: assets/images/product@2x.png, product@3x.png
+- **dimensions**: 800px × 600px (@2x), 1200px × 900px (@3x)
+
+## Logos (SVG)
+
+### company-logo
+- **nodeId**: 123:460
+- **path**: assets/images/logo.svg
+- **size**: 120px × 40px
+```
+
+### Step 9: Show Diff
+
+If markdown exists:
 
 ```bash
-# Collect all node IDs
+git diff --no-index <existing> <new> || diff -u <existing> <new>
+```
+
+Present changes:
+
+```
+Changes:
+Icons:
+  + search-icon (new)
+  ~ menu-icon: 24px → 20px
+  - old-icon (removed)
+Illustrations:
+  + hero-illustration (new)
+Photos:
+  ~ product-photo: single → multi-resolution
+
+Review? (show/approve/cancel)
+```
+
+### Step 10: Review
+
+```
+Markdown: {path}/assets.md
+Ready to export? (yes/no/later)
+```
+
+**yes:** Step 11 | **no/later:** Stop (user edits, exports later)
+
+### Step 11: Export
+
+```bash
 NODE_IDS="nodeId1,nodeId2,nodeId3"
 
-# Export SVG assets
 SVG_EXPORT=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
   "https://api.figma.com/v1/images/${fileKey}?ids=${NODE_IDS}&format=svg")
 
-# Export PNG assets (multi-resolution)
 PNG_EXPORT_2X=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
   "https://api.figma.com/v1/images/${fileKey}?ids=${NODE_IDS}&format=png&scale=2")
 
@@ -240,60 +269,67 @@ PNG_EXPORT_3X=$(curl -s -H "X-Figma-Token: $FIGMA_ACCESS_TOKEN" \
   "https://api.figma.com/v1/images/${fileKey}?ids=${NODE_IDS}&format=png&scale=3")
 ```
 
-Parse JSON to extract download URLs per nodeId.
-
-### Step 9: Download Assets
-
-Download files from export URLs to `<asset-dir>` subdirectories:
+Parse URLs per nodeId. Validate nodes exist:
 
 ```bash
-# Create directories
+MISSING=$(echo "$SVG_EXPORT" | jq -r '.err // empty')
+if [ -n "$MISSING" ]; then
+  echo "ERROR: Nodes deleted/moved: $MISSING"
+  echo "Re-run Step 3 to update markdown"
+  exit 1
+fi
+```
+
+### Step 12: Download
+
+```bash
 mkdir -p <asset-dir>/images <asset-dir>/icons
 
-# Download SVG assets
 for nodeId in $SVG_NODE_IDS; do
   url=$(echo "$SVG_EXPORT" | jq -r ".images[\"$nodeId\"]")
-  filename=$(get_filename_for_node $nodeId)  # from classification
+  filename=$(get_filename_for_node $nodeId)
   curl -s "$url" -o "<asset-dir>/icons/${filename}.svg"
 done
 
-# Download PNG assets (multi-resolution)
 for nodeId in $PNG_NODE_IDS; do
   url_2x=$(echo "$PNG_EXPORT_2X" | jq -r ".images[\"$nodeId\"]")
   url_3x=$(echo "$PNG_EXPORT_3X" | jq -r ".images[\"$nodeId\"]")
   filename=$(get_filename_for_node $nodeId)
-  
   curl -s "$url_2x" -o "<asset-dir>/images/${filename}@2x.png"
   curl -s "$url_3x" -o "<asset-dir>/images/${filename}@3x.png"
 done
 ```
 
-### Step 10: Validate Extracted Assets
-
-Compare extracted assets against original screenshot:
+### Step 13: Validate
 
 ```bash
-# Display original for comparison
 open /tmp/figma-assets-detection-${nodeId}.png
-
-# Display extracted assets
 open <asset-dir>/images/
 open <asset-dir>/icons/
 ```
 
-**Verification checklist:**
+**Verify:**
 
-1. All visually identified assets extracted
-2. Asset quality appropriate (SVG crisp, PNG high-res)
-3. Filenames semantic and collision-free
-4. No extra/unwanted assets extracted
-5. Classification correct (icon vs illustration vs photo)
+1. All identified assets extracted
+2. Quality appropriate (SVG crisp, PNG high-res)
+3. Filenames semantic, no collisions
+4. No unwanted assets
+5. Classification correct
 
-If fails: identify gaps, re-run matching for missed assets. If pass: proceed.
+If fails: identify gaps, re-run matching. If pass: proceed.
 
-### Step 11: Generate Asset Index
+### Step 14: Generate Asset Index
 
 Generate asset index file following framework conventions. Exports grouped by category. Convert filenames to appropriate naming convention. Use multi-resolution suffixes for PNGs when needed.
+
+## Regenerating from Markdown
+
+If user has markdown but needs re-export:
+
+1. Read `docs/design-system/assets.md`
+2. Parse inventory (nodeIds, paths, classifications)
+3. Export (Step 11) → Download (Step 12) → Validate (Step 13)
+4. Skip detection/matching (markdown is source of truth)
 
 ## Prerequisites
 
@@ -312,24 +348,6 @@ assets/
 │   └── close.svg
 └── index.*          # Asset index (extension varies by language)
 ```
-
-## Why Screenshot-First Works
-
-**Problem:** API-first blind search fails with complex designs:
-- Deep nesting (PAGE > FRAME > GROUP > INSTANCE > IMAGE) hides assets
-- Component instances (INSTANCE nodes) hide underlying IMAGE nodes
-- No semantic context (can't distinguish content from decoration)
-- Generic names ("Rectangle 123") prevent matching
-
-**Solution:** Screenshot provides visual context:
-- Human-recognizable assets ("blue car illustration")
-- Semantic classification (content vs decoration)
-- Position + size anchors for API matching
-- Validation loop (compare extracted vs screenshot)
-
-**Flow:** See screenshot → Identify assets → Find in API → Extract
-
-This mirrors how designers work: they see the design visually, then locate elements in the layers panel.
 
 ## Common Issues
 
